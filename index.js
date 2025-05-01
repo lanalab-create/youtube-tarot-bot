@@ -26,21 +26,26 @@ async function refreshAccessToken() {
       },
     });
     accessToken = response.data.access_token;
-    console.log('Access token refreshed!');
+    console.log('✅ Access token refreshed!');
   } catch (error) {
-    console.error('Error refreshing access token:', error.response?.data || error.message);
+    console.error('❌ Error refreshing access token:', error.response?.data || error.message);
   }
 }
 
 async function getLiveChatMessages() {
   try {
+    const params = {
+      liveChatId: LIVE_CHAT_ID,
+      part: 'snippet,authorDetails',
+    };
+
+    if (nextPageToken) {
+      params.pageToken = nextPageToken;
+    }
+
     const response = await axios.get('https://www.googleapis.com/youtube/v3/liveChat/messages', {
       headers: { Authorization: `Bearer ${accessToken}` },
-      params: {
-        liveChatId: LIVE_CHAT_ID,
-        part: 'snippet,authorDetails',
-        pageToken: nextPageToken,
-      },
+      params,
     });
 
     const messages = response.data.items || [];
@@ -51,7 +56,7 @@ async function getLiveChatMessages() {
       const author = message.authorDetails.displayName;
       console.log(`${author}: ${text}`);
 
-      // Send to Dialogflow webhook
+      // Send message to Dialogflow webhook
       const dialogflowResponse = await axios.post(DIALOGFLOW_WEBHOOK_URL, {
         message: text,
         author: author,
@@ -63,9 +68,16 @@ async function getLiveChatMessages() {
       }
     }
   } catch (error) {
-    console.error('Error fetching messages:', error.response?.data || error.message);
+    const message = error.response?.data || error.message;
+    console.error('❌ Error fetching messages:', message);
+
+    if (message?.error?.message === 'page token is not valid.') {
+      console.warn('⚠️ Resetting nextPageToken due to invalid page token.');
+      nextPageToken = null;
+    }
+
     if (error.response?.status === 401) {
-      console.log('Refreshing token...');
+      console.log('🔁 Token expired, refreshing...');
       await refreshAccessToken();
     }
   }
@@ -87,23 +99,23 @@ async function sendMessageToChat(message) {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
-        params: {
-          part: 'snippet',
-        },
+        params: { part: 'snippet' },
       }
     );
-    console.log('Bot:', message);
+    console.log('🤖 Bot:', message);
   } catch (error) {
-    console.error('Error sending message to chat:', error.response?.data || error.message);
+    console.error('❌ Error sending message:', error.response?.data || error.message);
   }
 }
 
-app.get('/', async (req, res) => {
-  res.send('YouTube bot is running!');
+// Home route
+app.get('/', (req, res) => {
+  res.send('🔮 YouTube Tarot Bot is running!');
 });
 
 app.listen(PORT, async () => {
-  console.log(`Server is running on port ${PORT}`);
-  await refreshAccessToken(); // Initial refresh
-  setInterval(getLiveChatMessages, 8000); // Every 8 seconds
+  console.log(`🚀 Server is live on port ${PORT}`);
+  await refreshAccessToken(); // Initial token refresh
+  setInterval(refreshAccessToken, 55 * 60 * 1000); // Refresh every 55 minutes
+  setInterval(getLiveChatMessages, 8000); // Poll every 8 seconds
 });
