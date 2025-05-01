@@ -1,0 +1,11 @@
+{
+  "name": "youtube-tarot-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "googleapis": "^105.0.0",
+    "node-fetch": "^2.6.9",
+    "dotenv": "^16.0.3"
+  }
+}
