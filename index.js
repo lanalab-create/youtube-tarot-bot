@@ -1,65 +1,109 @@
-// index.js
-const { google } = require("googleapis");
-const fetch = require("node-fetch");
+const express = require('express');
+const axios = require('axios');
+require('dotenv').config();
 
-// Load environment variables
-require("dotenv").config();
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-const API_KEY = process.env.YOUTUBE_API_KEY;
+// ENV variables
+const CLIENT_ID = process.env.YOUTUBE_CLIENT_ID;
+const CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET;
+const REFRESH_TOKEN = process.env.YOUTUBE_REFRESH_TOKEN;
 const LIVE_CHAT_ID = process.env.LIVE_CHAT_ID;
-const WEBHOOK_URL = process.env.DIALOGFLOW_WEBHOOK;
+const DIALOGFLOW_WEBHOOK_URL = process.env.DIALOGFLOW_WEBHOOK_URL;
 
-let nextPageToken = "";
+let accessToken = null;
+let nextPageToken = null;
+
+async function refreshAccessToken() {
+  try {
+    const response = await axios.post('https://oauth2.googleapis.com/token', null, {
+      params: {
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        refresh_token: REFRESH_TOKEN,
+        grant_type: 'refresh_token',
+      },
+    });
+    accessToken = response.data.access_token;
+    console.log('Access token refreshed!');
+  } catch (error) {
+    console.error('Error refreshing access token:', error.response?.data || error.message);
+  }
+}
 
 async function getLiveChatMessages() {
-  const youtube = google.youtube("v3");
-  const res = await youtube.liveChatMessages.list({
-    liveChatId: LIVE_CHAT_ID,
-    part: "snippet,authorDetails",
-    pageToken: nextPageToken,
-    key: API_KEY,
-  });
-
-  nextPageToken = res.data.nextPageToken;
-
-  const messages = res.data.items || [];
-  for (const msg of messages) {
-    const text = msg.snippet.displayMessage;
-    const user = msg.authorDetails.displayName;
-
-    // Skip bot messages to avoid loops
-    if (msg.authorDetails.isChatModerator || msg.authorDetails.isChatOwner) continue;
-
-    // Send to webhook
-    const response = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: text }),
-    });
-    const data = await response.json();
-
-    const reply = `@${user} ${data.response}`;
-    await sendMessage(reply);
-  }
-
-  // Wait and repeat
-  setTimeout(getLiveChatMessages, 6000);
-}
-
-async function sendMessage(message) {
-  const youtube = google.youtube("v3");
-  await youtube.liveChatMessages.insert({
-    part: "snippet",
-    key: API_KEY,
-    requestBody: {
-      snippet: {
+  try {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/liveChat/messages', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: {
         liveChatId: LIVE_CHAT_ID,
-        type: "textMessageEvent",
-        textMessageDetails: { messageText: message },
+        part: 'snippet,authorDetails',
+        pageToken: nextPageToken,
       },
-    },
-  });
+    });
+
+    const messages = response.data.items || [];
+    nextPageToken = response.data.nextPageToken;
+
+    for (const message of messages) {
+      const text = message.snippet.displayMessage;
+      const author = message.authorDetails.displayName;
+      console.log(`${author}: ${text}`);
+
+      // Send to Dialogflow webhook
+      const dialogflowResponse = await axios.post(DIALOGFLOW_WEBHOOK_URL, {
+        message: text,
+        author: author,
+      });
+
+      const reply = dialogflowResponse.data.reply || dialogflowResponse.data.fulfillmentText;
+      if (reply) {
+        await sendMessageToChat(reply);
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching messages:', error.response?.data || error.message);
+    if (error.response?.status === 401) {
+      console.log('Refreshing token...');
+      await refreshAccessToken();
+    }
+  }
 }
 
-// Start the loop
-getLiveChatMessages();
+async function sendMessageToChat(message) {
+  try {
+    await axios.post(
+      'https://www.googleapis.com/youtube/v3/liveChat/messages',
+      {
+        snippet: {
+          liveChatId: LIVE_CHAT_ID,
+          type: 'textMessageEvent',
+          textMessageDetails: { messageText: message },
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        params: {
+          part: 'snippet',
+        },
+      }
+    );
+    console.log('Bot:', message);
+  } catch (error) {
+    console.error('Error sending message to chat:', error.response?.data || error.message);
+  }
+}
+
+app.get('/', async (req, res) => {
+  res.send('YouTube bot is running!');
+});
+
+app.listen(PORT, async () => {
+  console.log(`Server is running on port ${PORT}`);
+  await refreshAccessToken(); // Initial refresh
+  setInterval(getLiveChatMessages, 8000); // Every 8 seconds
+});
